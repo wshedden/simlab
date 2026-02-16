@@ -1,0 +1,36 @@
+:root {
+  --bg: #000;
+  --fg: #e9ecff;
+  --muted: rgba(233,236,255,0.7);
+  --panel: rgba(10, 12, 20, 0.75);
+  --stroke: rgba(120, 160, 255, 0.25);
+  --accent: rgba(120,160,255,0.25);
+}
+
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Arial, sans-serif; }
+
+#c { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+#uiRoot { position: fixed; top: 10px; left: 10px; right: 10px; pointer-events: none; }
+#uiRoot > * { pointer-events: auto; } /* if a game adds UI */
+
+a { color: #8fb0ff; text-decoration: none; }
+
+.launcher { padding: 18px; max-width: 980px; margin: 0 auto; }
+.launcher h1 { margin: 6px 0 8px; }
+.muted { color: var(--muted); margin: 0 0 14px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+
+.card {
+  display: block;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(10, 12, 20, 0.75);
+  border: 1px solid var(--stroke);
+}
+.card:hover { border-color: var(--accent); }
+.cardTitle { font-weight: 700; margin-bottom: 6px; }
+.cardDesc { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+.cardMeta { color: rgba(233,236,255,0.55); font-size: 12px; }
+
+.quick { display: inline-block; margin-top: 14px; padding: 10px 12px; border-radius: 999px; border: 1px solid var(--stroke); background: rgba(0,0,0,0.25); }
