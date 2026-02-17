@@ -11,6 +11,7 @@ const GAMES = [
   {id: "openrouter-neon-probe", name: "OpenRouter Neon Probe", module: "./games/openrouter-neon-probe.js", fn: "startGame" },
   {id: "alien-diplomacy-protocol", name: "Alien Diplomacy Protocol", module: "./games/alien-diplomacy-protocol.js", fn: "startGame" },
   {id: "kingdom-diplomacy-chat", name: "Kingdom Diplomacy Chat", module: "./games/kingdom-diplomacy-chat.js", fn: "startGame" },
+  {id: "kira-algorithm-of-judgement", name: "Kira — Algorithm of Judgement", module: "./games/kira-algorithm-of-judgement.js", fn: "startGame" },
   {id: "neon-capital-flows", name: "Neon Capital Flows", module: "./games/neon-capital-flows.js", fn: "startGame" },
   {id: "neon-venture", name: "Neon Venture", module: "./games/neon-venture.js", fn: "startGame" },
 ];

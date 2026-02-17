@@ -10,6 +10,7 @@ const GAMES = [
   { id: "market-microstructure-swarm", name: "Market Microstructure Swarm", desc: "Agent-based order book simulation.", href: "/play.html?game=market-microstructure-swarm" },
   { id: "openrouter-neon-probe", name: "OpenRouter Neon Probe", desc: "Visual probe for OpenRouter API streaming.", href: "/play.html?game=openrouter-neon-probe" },
   { id: "alien-diplomacy-protocol", name: "Alien Diplomacy Protocol", desc: "Interact with an alien polity using OpenRouter-driven narrative.", href: "/play.html?game=alien-diplomacy-protocol" },
+  { id: "kira-algorithm-of-judgement", name: "Kira — Algorithm of Judgement", desc: "Procedural world sim & thriller generator (AI-assisted).", href: "/play.html?game=kira-algorithm-of-judgement" },
   { id: "kingdom-diplomacy-chat", name: "Kingdom Diplomacy Chat", desc: "Diplomacy sandbox with AI-driven realm negotiation.", href: "/play.html?game=kingdom-diplomacy-chat" },
   { id: "neon-capital-flows", name: "Neon Capital Flows", desc: "Visualise capital movement between neon markets (placeholder).", href: "/play.html?game=neon-capital-flows" },
   { id: "neon-venture", name: "Neon Venture", desc: "Startup/venture flow visualisation (placeholder).", href: "/play.html?game=neon-venture" },

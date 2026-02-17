@@ -11,6 +11,7 @@ const GAME_REGISTRY = {
   "openrouter-neon-probe": () => import("./games/openrouter-neon-probe.js"),
   "alien-diplomacy-protocol": () => import("./games/alien-diplomacy-protocol.js"),
   "kingdom-diplomacy-chat": () => import("./games/kingdom-diplomacy-chat.js"),
+  "kira-algorithm-of-judgement": () => import("./games/kira-algorithm-of-judgement.js"),
   "neon-capital-flows": () => import("./games/neon-capital-flows.js"),
   "neon-venture": () => import("./games/neon-venture.js"),
 };
