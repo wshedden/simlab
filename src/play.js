@@ -13,6 +13,7 @@ const GAME_REGISTRY = {
   "kingdom-diplomacy-chat": () => import("./games/kingdom-diplomacy-chat.js"),
   "neon-capital-flows": () => import("./games/neon-capital-flows.js"),
   "neon-venture": () => import("./games/neon-venture.js"),
+  "kira-algorithm-of-judgement": () => import("./games/kira-algorithm-of-judgement.js"),
 };
 
 function getGameId() {
