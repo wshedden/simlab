@@ -3,7 +3,7 @@ import { Engine } from "../engine/engine.js";
 export function startGame(ctx) {
   Engine.init({ canvasId: (ctx && ctx.canvasId) || "c" });
 
-  const SAVE_KEY = "simlab.kingdomDiplomacyChat.v1";
+  const SAVE_KEY = "simlab.kingdomDiplomacyChat.v2";
   const OR_KEY =
     (typeof import.meta !== "undefined" &&
       import.meta.env &&
@@ -21,7 +21,6 @@ export function startGame(ctx) {
   // ---------------- utilities ----------------
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
   const nowSec = () => performance.now() * 0.001;
-  const TAU = Math.PI * 2;
 
   function safeJsonParse(s) {
     try {
@@ -45,20 +44,7 @@ export function startGame(ctx) {
   }
 
   function monthName(m) {
-    const a = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
+    const a = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return a[((m % 12) + 12) % 12];
   }
 
@@ -66,6 +52,10 @@ export function startGame(ctx) {
     const e = document.createElement(tag);
     if (styleObj) Object.assign(e.style, styleObj);
     return e;
+  }
+
+  function uid() {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
   function btn(label) {
@@ -92,12 +82,7 @@ export function startGame(ctx) {
     b.style.cursor = dis ? "not-allowed" : "pointer";
   }
 
-  function uid() {
-    return Math.random().toString(36).slice(2) + Date.now().toString(36);
-  }
-
   // ---------------- world model ----------------
-  // Player is England (simple diplomacy sandbox, one action per month)
   const REALMS = [
     {
       id: "ENG",
@@ -107,6 +92,7 @@ export function startGame(ctx) {
       provinces: ["London", "Kent", "Wessex", "Mercia", "York"],
       artifacts: ["Wool Contracts", "Royal Charter Seal"],
       gold: 220,
+      military: 115,
       aiStyle: "direct, pragmatic, modern",
     },
     {
@@ -117,6 +103,7 @@ export function startGame(ctx) {
       provinces: ["Lothian", "Fife", "Highlands", "Aberdeenshire"],
       artifacts: ["Highland Timber Rights"],
       gold: 140,
+      military: 80,
       aiStyle: "blunt, guarded, modern",
     },
     {
@@ -127,6 +114,7 @@ export function startGame(ctx) {
       provinces: ["Leinster", "Munster", "Connacht", "Ulster"],
       artifacts: ["Harbour Access Pact"],
       gold: 120,
+      military: 60,
       aiStyle: "wry, transactional, modern",
     },
     {
@@ -137,6 +125,7 @@ export function startGame(ctx) {
       provinces: ["Île-de-France", "Normandy", "Brittany", "Aquitaine", "Burgundy Fringe"],
       artifacts: ["Wine Monopoly Writ", "Court Favour Token"],
       gold: 280,
+      military: 140,
       aiStyle: "confident, strategic, modern",
     },
     {
@@ -147,6 +136,7 @@ export function startGame(ctx) {
       provinces: ["Castilla", "Galicia", "Andalucía (North)"],
       artifacts: ["Silver Assay Mark"],
       gold: 240,
+      military: 105,
       aiStyle: "formal but plain, modern",
     },
     {
@@ -157,6 +147,7 @@ export function startGame(ctx) {
       provinces: ["Lisboa", "Porto", "Algarve"],
       artifacts: ["Atlantic Charts (Draft)"],
       gold: 180,
+      military: 70,
       aiStyle: "practical, friendly, modern",
     },
   ];
@@ -164,35 +155,38 @@ export function startGame(ctx) {
   const REALM_BY_ID = {};
   for (let i = 0; i < REALMS.length; i++) REALM_BY_ID[REALMS[i].id] = REALMS[i];
 
+  const otherIds = ["SCO", "IRE", "FRA", "CAS", "POR"];
+
   function defaultRelations() {
-    // -100..+100
-    return {
-      SCO: -10,
-      IRE: +5,
-      FRA: -15,
-      CAS: +8,
-      POR: +18,
-    };
+    return { SCO: -10, IRE: +5, FRA: -15, CAS: +8, POR: +18 };
+  }
+
+  function defaultMilitary() {
+    const m = {};
+    for (let i = 0; i < REALMS.length; i++) m[REALMS[i].id] = REALMS[i].military | 0;
+    return m;
   }
 
   const state = {
-    paused: false,
-
     // time
     year: 1444,
-    month: 10, // Nov (0-based)
+    month: 10, // Nov
     actionAvailable: true,
 
-    // settings
-    model: "openai/gpt-4o-mini",
-    temperature: 0.45,
-    maxTokens: 700,
+    // LLM settings
+    model: "anthropic/claude-3.5-sonnet",
+    temperature: 0.35,
+    maxTokens: 650,
     stream: true,
 
     // player
     playerId: "ENG",
     playerGold: REALM_BY_ID.ENG.gold,
     relations: defaultRelations(),
+
+    // military + risk
+    military: defaultMilitary(), // ENG etc
+    warRisk: 10, // 0..100
 
     // inventories
     invPlayer: REALM_BY_ID.ENG.artifacts.slice(),
@@ -215,16 +209,10 @@ export function startGame(ctx) {
     selectedRealm: "SCO",
 
     // chat logs per realm
-    chats: {
-      SCO: [],
-      IRE: [],
-      FRA: [],
-      CAS: [],
-      POR: [],
-    },
+    chats: { SCO: [], IRE: [], FRA: [], CAS: [], POR: [] },
 
     // monthly log
-    worldEvents: [], // {t, text}
+    worldEvents: [],
     status: "",
     statusUntil: 0,
 
@@ -234,13 +222,27 @@ export function startGame(ctx) {
     lastError: "",
     autosaveAt: 0,
 
+    // last parsed outcome for UI
+    lastOutcomeByRealm: {
+      SCO: null,
+      IRE: null,
+      FRA: null,
+      CAS: null,
+      POR: null,
+    },
+
     // offer builder
     offer: {
       giveGold: 0,
       takeGold: 0,
-      giveItems: {}, // item -> true
-      takeItems: {}, // item -> true
+      giveItems: {},
+      takeItems: {},
     },
+
+    // internal UI flags
+    _offerUiRealm: "",
+    _offerUiVersion: 0,
+    _invVersion: 1,
   };
 
   function flash(msg, seconds = 1.2) {
@@ -259,12 +261,12 @@ export function startGame(ctx) {
       month: state.month,
       year: state.year,
     });
-    if (arr.length > 200) arr.splice(0, arr.length - 200);
+    if (arr.length > 240) arr.splice(0, arr.length - 240);
   }
 
   function worldAdd(text) {
     state.worldEvents.push({ t: Date.now(), text: String(text || "") });
-    if (state.worldEvents.length > 80) state.worldEvents.splice(0, state.worldEvents.length - 80);
+    if (state.worldEvents.length > 100) state.worldEvents.splice(0, state.worldEvents.length - 100);
   }
 
   function advanceMonth() {
@@ -275,14 +277,39 @@ export function startGame(ctx) {
     }
     state.actionAvailable = true;
 
-    // small drift: if you keep being hostile, relations worsen; if friendly, slight stabilisation
-    const keys = Object.keys(state.relations);
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      let r = state.relations[k] || 0;
-      // Gentle mean reversion to 0
+    // gentle mean reversion
+    for (let i = 0; i < otherIds.length; i++) {
+      const id = otherIds[i];
+      let r = state.relations[id] || 0;
       r += (0 - r) * 0.02;
-      state.relations[k] = clamp(Math.round(r), -100, 100);
+      state.relations[id] = clamp(Math.round(r), -100, 100);
+    }
+
+    // war risk drift: calm down slowly if nothing hot is happening
+    state.warRisk = clamp(Math.round(state.warRisk * 0.97), 0, 100);
+
+    // if risk high and relations awful with someone, trigger a border incident occasionally
+    if (state.warRisk >= 75) {
+      // pick worst relation
+      let worstId = "SCO";
+      let worst = 999;
+      for (let i = 0; i < otherIds.length; i++) {
+        const id = otherIds[i];
+        const v = state.relations[id] || 0;
+        if (v < worst) {
+          worst = v;
+          worstId = id;
+        }
+      }
+      if (worst <= -45 && Math.random() < 0.35) {
+        const them = REALM_BY_ID[worstId].name;
+        const cost = 8 + ((Math.random() * 8) | 0);
+        state.playerGold = Math.max(0, state.playerGold - cost);
+        state.relations[worstId] = clamp((state.relations[worstId] || 0) - 6, -100, 100);
+        state.warRisk = clamp(state.warRisk + 6, 0, 100);
+        worldAdd(`Border incident with ${them}. You spend ${cost}g on emergency security and bribes. War risk rises.`);
+        chatAdd(worstId, "system", `Border incident worsened tensions. (-${cost}g, relations -6, war risk +6)`);
+      }
     }
   }
 
@@ -290,7 +317,7 @@ export function startGame(ctx) {
   function saveNow() {
     try {
       Engine.save(SAVE_KEY, {
-        v: 1,
+        v: 2,
         year: state.year,
         month: state.month,
         actionAvailable: state.actionAvailable,
@@ -300,12 +327,15 @@ export function startGame(ctx) {
         stream: state.stream,
         playerGold: state.playerGold,
         relations: state.relations,
+        military: state.military,
+        warRisk: state.warRisk,
         invPlayer: state.invPlayer,
         invOther: state.invOther,
         goldOther: state.goldOther,
         chats: state.chats,
         worldEvents: state.worldEvents,
         selectedRealm: state.selectedRealm,
+        lastOutcomeByRealm: state.lastOutcomeByRealm,
         savedAt: Date.now(),
       });
     } catch {}
@@ -326,44 +356,55 @@ export function startGame(ctx) {
       if (typeof s.stream === "boolean") state.stream = s.stream;
 
       if (typeof s.playerGold === "number") state.playerGold = Math.max(0, s.playerGold);
+
       if (s.relations && typeof s.relations === "object") {
-        const keys = Object.keys(defaultRelations());
-        for (let i = 0; i < keys.length; i++) {
-          const k = keys[i];
-          state.relations[k] = clamp((Number(s.relations[k]) || 0) | 0, -100, 100);
+        for (let i = 0; i < otherIds.length; i++) {
+          const id = otherIds[i];
+          state.relations[id] = clamp((Number(s.relations[id]) || 0) | 0, -100, 100);
         }
       }
+
+      if (s.military && typeof s.military === "object") {
+        for (let i = 0; i < REALMS.length; i++) {
+          const id = REALMS[i].id;
+          const v = Number(s.military[id]);
+          if (isFinite(v)) state.military[id] = clamp(v | 0, 0, 999);
+        }
+      }
+      if (typeof s.warRisk === "number") state.warRisk = clamp((s.warRisk | 0) || 0, 0, 100);
+
       if (Array.isArray(s.invPlayer)) state.invPlayer = s.invPlayer.slice(0, 64).map(String);
       if (s.invOther && typeof s.invOther === "object") {
-        const ids = ["SCO", "IRE", "FRA", "CAS", "POR"];
-        for (let i = 0; i < ids.length; i++) {
-          const id = ids[i];
+        for (let i = 0; i < otherIds.length; i++) {
+          const id = otherIds[i];
           const arr = s.invOther[id];
           if (Array.isArray(arr)) state.invOther[id] = arr.slice(0, 64).map(String);
         }
       }
       if (s.goldOther && typeof s.goldOther === "object") {
-        const ids = ["SCO", "IRE", "FRA", "CAS", "POR"];
-        for (let i = 0; i < ids.length; i++) {
-          const id = ids[i];
+        for (let i = 0; i < otherIds.length; i++) {
+          const id = otherIds[i];
           const g = Number(s.goldOther[id]);
           if (isFinite(g)) state.goldOther[id] = Math.max(0, g);
         }
       }
       if (s.chats && typeof s.chats === "object") {
-        const ids = ["SCO", "IRE", "FRA", "CAS", "POR"];
-        for (let i = 0; i < ids.length; i++) {
-          const id = ids[i];
+        for (let i = 0; i < otherIds.length; i++) {
+          const id = otherIds[i];
           const arr = s.chats[id];
-          if (Array.isArray(arr)) state.chats[id] = arr.slice(0, 200);
+          if (Array.isArray(arr)) state.chats[id] = arr.slice(0, 240);
         }
       }
-      if (Array.isArray(s.worldEvents)) state.worldEvents = s.worldEvents.slice(0, 80);
-      if (typeof s.selectedRealm === "string" && state.chats[s.selectedRealm]) {
-        state.selectedRealm = s.selectedRealm;
+      if (Array.isArray(s.worldEvents)) state.worldEvents = s.worldEvents.slice(0, 100);
+      if (typeof s.selectedRealm === "string" && state.chats[s.selectedRealm]) state.selectedRealm = s.selectedRealm;
+
+      if (s.lastOutcomeByRealm && typeof s.lastOutcomeByRealm === "object") {
+        for (let i = 0; i < otherIds.length; i++) {
+          const id = otherIds[i];
+          state.lastOutcomeByRealm[id] = s.lastOutcomeByRealm[id] || null;
+        }
       }
 
-      // tiny offline: if you end a month without acting, no free income; just keep it safe.
       return true;
     } catch {
       return false;
@@ -379,28 +420,78 @@ export function startGame(ctx) {
 
     const r = REALM_BY_ID[realmId];
     chatAdd(realmId, "system", `${monthName(state.month)} ${state.year}. You open a channel to ${r.name}. One action per month.`);
-    chatAdd(
-      realmId,
-      "system",
-      `Keep it modern and blunt. Offer deals, threats, concessions. Everything you write can change relations, gold, and artifacts.`
-    );
+    chatAdd(realmId, "system", `Keep it modern and blunt. Deals, threats, concessions. Outcomes affect gold, artifacts, relations, war risk.`);
   }
-
-  const otherIds = ["SCO", "IRE", "FRA", "CAS", "POR"];
   for (let i = 0; i < otherIds.length; i++) ensureIntro(otherIds[i]);
 
-  // ---------------- strict control block parsing ----------------
-  const BLOCK_OPEN = "[[DIPLOMACY_V1]]";
-  const BLOCK_CLOSE = "[[/DIPLOMACY_V1]]";
+  // ---------------- parsing: robust control extraction + chat sanitising ----------------
+  const BLOCK_OPEN = "[[DIPLOMACY_V2]]";
+  const BLOCK_CLOSE = "[[/DIPLOMACY_V2]]";
 
-  function extractBlock(fullText) {
+  function stripControlLines(s) {
+    // If the model leaks control lines into dialogue, delete them.
+    const lines = String(s || "").split("\n");
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) {
+        out.push(lines[i]);
+        continue;
+      }
+      const up = t.toUpperCase();
+      if (
+        up.startsWith("SPEAKER:") ||
+        up.startsWith("TONE:") ||
+        up.startsWith("INTENT:") ||
+        up.startsWith("SUMMARY:") ||
+        up.startsWith("TO_REALM:") ||
+        up.startsWith("DELTA_") ||
+        up.startsWith("TRANSFER_ITEMS") ||
+        up.startsWith("WORLD_EVENTS") ||
+        up.startsWith("FLAGS") ||
+        up.startsWith("SUGGESTIONS") ||
+        up === "DELTA_RELATIONS:" ||
+        up === "DELTA_RELATIONS" ||
+        up === "TRANSFER_ITEMS:" ||
+        up === "WORLD_EVENTS:" ||
+        up === "FLAGS:" ||
+        up === "SUGGESTIONS:"
+      ) {
+        continue;
+      }
+      // also remove obvious block markers if they appear in chat
+      if (t.includes("[[DIPLOMACY_")) continue;
+      out.push(lines[i]);
+    }
+    return out.join("\n").trim();
+  }
+
+  function extractBlockBestEffort(fullText) {
     const s = String(fullText || "");
     const a = s.indexOf(BLOCK_OPEN);
     const b = s.indexOf(BLOCK_CLOSE);
-    if (a === -1 || b === -1 || b <= a) return null;
-    const block = s.slice(a + BLOCK_OPEN.length, b).trim();
-    const dialogue = (s.slice(0, a).trim() || "").trim();
-    return { block, dialogue };
+
+    if (a !== -1 && b !== -1 && b > a) {
+      const block = s.slice(a + BLOCK_OPEN.length, b).trim();
+      const dialogue = stripControlLines(s.slice(0, a).trim());
+      return { block, dialogue, ok: true };
+    }
+
+    // fallback: find where control starts (SPEAKER: or DELTA_RELATIONS:)
+    const idxSpeaker = s.search(/^\s*SPEAKER\s*:/im);
+    const idxDeltaRel = s.search(/^\s*DELTA_RELATIONS\s*:/im);
+    let cut = -1;
+    if (idxSpeaker !== -1) cut = idxSpeaker;
+    else if (idxDeltaRel !== -1) cut = idxDeltaRel;
+
+    if (cut !== -1) {
+      const dialogue = stripControlLines(s.slice(0, cut).trim());
+      const block = s.slice(cut).trim();
+      return { block, dialogue, ok: true };
+    }
+
+    // nothing parseable
+    return { block: "", dialogue: stripControlLines(s), ok: false };
   }
 
   function parseBlock(blockText) {
@@ -414,18 +505,20 @@ export function startGame(ctx) {
       intent: "",
       summary: "",
       toRealm: state.selectedRealm,
-      deltaRelations: {}, // realmId -> int
+
+      deltaRelations: { SCO: 0, IRE: 0, FRA: 0, CAS: 0, POR: 0 },
       deltaGoldPlayer: 0,
       deltaGoldOther: 0,
+      deltaWarRisk: 0,
+      deltaMilitary: { ENG: 0, SCO: 0, IRE: 0, FRA: 0, CAS: 0, POR: 0 },
+
       transferGiveItems: [],
       transferTakeItems: [],
+
       worldEvents: [],
       suggestions: [],
       flags: [],
     };
-
-    // defaults
-    for (let i = 0; i < otherIds.length; i++) out.deltaRelations[otherIds[i]] = 0;
 
     let section = "";
     for (let i = 0; i < lines.length; i++) {
@@ -433,16 +526,38 @@ export function startGame(ctx) {
       const line = raw.trim();
       if (!line) continue;
 
-      if (line === "DELTA_RELATIONS:" || line === "DELTA_RELATIONS") { section = "DELTA_REL"; continue; }
-      if (line === "TRANSFER_ITEMS:" || line === "TRANSFER_ITEMS") { section = "XFER"; continue; }
-      if (line === "WORLD_EVENTS:" || line === "WORLD_EVENTS") { section = "WORLD"; continue; }
-      if (line === "SUGGESTIONS:" || line === "SUGGESTIONS") { section = "SUGG"; continue; }
-      if (line === "FLAGS:" || line === "FLAGS") { section = "FLAGS"; continue; }
+      const u = line.toUpperCase();
+
+      if (u === "DELTA_RELATIONS:" || u === "DELTA_RELATIONS") {
+        section = "DELTA_REL";
+        continue;
+      }
+      if (u === "DELTA_MILITARY:" || u === "DELTA_MILITARY") {
+        section = "DELTA_MIL";
+        continue;
+      }
+      if (u === "TRANSFER_ITEMS:" || u === "TRANSFER_ITEMS") {
+        section = "XFER";
+        continue;
+      }
+      if (u === "WORLD_EVENTS:" || u === "WORLD_EVENTS") {
+        section = "WORLD";
+        continue;
+      }
+      if (u === "SUGGESTIONS:" || u === "SUGGESTIONS") {
+        section = "SUGG";
+        continue;
+      }
+      if (u === "FLAGS:" || u === "FLAGS") {
+        section = "FLAGS";
+        continue;
+      }
 
       const kv = line.match(/^([A-Z0-9_\- ]+)\s*:\s*(.*)$/);
-      if (kv && section !== "DELTA_REL" && section !== "XFER") {
+      if (kv && section !== "DELTA_REL" && section !== "XFER" && section !== "DELTA_MIL") {
         const key = String(kv[1] || "").trim().toUpperCase().replace(/\s+/g, "_");
         const val = String(kv[2] || "").trim();
+
         if (key === "SPEAKER") out.speaker = val;
         else if (key === "TONE") out.tone = val;
         else if (key === "INTENT") out.intent = val;
@@ -452,6 +567,7 @@ export function startGame(ctx) {
           if (REALM_BY_ID[t] && t !== "ENG") out.toRealm = t;
         } else if (key === "DELTA_GOLD_PLAYER") out.deltaGoldPlayer = clamp((parseInt(val, 10) || 0) | 0, -500, 500);
         else if (key === "DELTA_GOLD_OTHER") out.deltaGoldOther = clamp((parseInt(val, 10) || 0) | 0, -500, 500);
+        else if (key === "DELTA_WAR_RISK") out.deltaWarRisk = clamp((parseInt(val, 10) || 0) | 0, -25, 25);
         continue;
       }
 
@@ -460,21 +576,30 @@ export function startGame(ctx) {
         if (m) {
           const id = m[1].toUpperCase();
           const v = clamp((parseInt(m[2], 10) || 0) | 0, -25, 25);
-          if (id !== "ENG" && state.relations[id] !== undefined) out.deltaRelations[id] = v;
+          if (id !== "ENG" && out.deltaRelations[id] !== undefined) out.deltaRelations[id] = v;
+        }
+        continue;
+      }
+
+      if (section === "DELTA_MIL") {
+        const m = line.match(/^([A-Z]{3})\s*:\s*([-+]?\d+)\s*$/);
+        if (m) {
+          const id = m[1].toUpperCase();
+          const v = clamp((parseInt(m[2], 10) || 0) | 0, -10, 10);
+          if (out.deltaMilitary[id] !== undefined) out.deltaMilitary[id] = v;
         }
         continue;
       }
 
       if (section === "XFER") {
-        // Give: item; item  OR  Take: item; item
         const mG = line.match(/^GIVE\s*:\s*(.*)$/i);
         const mT = line.match(/^TAKE\s*:\s*(.*)$/i);
         if (mG) {
           const parts = mG[1].split(";").map((p) => p.trim()).filter(Boolean);
-          for (let j = 0; j < parts.length && out.transferGiveItems.length < 8; j++) out.transferGiveItems.push(parts[j]);
+          for (let j = 0; j < parts.length && out.transferGiveItems.length < 10; j++) out.transferGiveItems.push(parts[j]);
         } else if (mT) {
           const parts = mT[1].split(";").map((p) => p.trim()).filter(Boolean);
-          for (let j = 0; j < parts.length && out.transferTakeItems.length < 8; j++) out.transferTakeItems.push(parts[j]);
+          for (let j = 0; j < parts.length && out.transferTakeItems.length < 10; j++) out.transferTakeItems.push(parts[j]);
         }
         continue;
       }
@@ -492,52 +617,171 @@ export function startGame(ctx) {
       }
     }
 
+    // ensure all relation keys exist
+    for (let i = 0; i < otherIds.length; i++) {
+      const id = otherIds[i];
+      if (out.deltaRelations[id] === undefined) out.deltaRelations[id] = 0;
+    }
+
     return out;
   }
 
+  // ---------------- apply control: enforce inventories + affordability ----------------
   function applyControl(ctrl) {
-    // gold deltas
-    state.playerGold = Math.max(0, state.playerGold + (ctrl.deltaGoldPlayer | 0));
-    const rid = ctrl.toRealm;
-    state.goldOther[rid] = Math.max(0, (state.goldOther[rid] || 0) + (ctrl.deltaGoldOther | 0));
+    const rid = ctrl.toRealm || state.selectedRealm;
 
-    // relations deltas
-    const keys = Object.keys(ctrl.deltaRelations || {});
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      if (state.relations[k] === undefined) continue;
-      state.relations[k] = clamp((state.relations[k] || 0) + (ctrl.deltaRelations[k] | 0), -100, 100);
+    // gold deltas: clamp by actual available funds (no going negative)
+    const dGP = ctrl.deltaGoldPlayer | 0;
+    const dGO = ctrl.deltaGoldOther | 0;
+
+    if (dGP < 0) {
+      const spend = Math.min(-dGP, Math.floor(state.playerGold));
+      state.playerGold -= spend;
+    } else if (dGP > 0) {
+      state.playerGold += dGP;
     }
 
-    // item transfers (best-effort; only if items exist)
+    const og = state.goldOther[rid] || 0;
+    if (dGO < 0) {
+      const spend = Math.min(-dGO, Math.floor(og));
+      state.goldOther[rid] = og - spend;
+    } else if (dGO > 0) {
+      state.goldOther[rid] = og + dGO;
+    }
+
+    // relations deltas
+    for (let i = 0; i < otherIds.length; i++) {
+      const id = otherIds[i];
+      const dv = (ctrl.deltaRelations && ctrl.deltaRelations[id]) | 0;
+      state.relations[id] = clamp((state.relations[id] || 0) + dv, -100, 100);
+    }
+
+    // war risk
+    state.warRisk = clamp(state.warRisk + ((ctrl.deltaWarRisk | 0) || 0), 0, 100);
+
+    // military drift (small)
+    if (ctrl.deltaMilitary && typeof ctrl.deltaMilitary === "object") {
+      const keys = Object.keys(ctrl.deltaMilitary);
+      for (let i = 0; i < keys.length; i++) {
+        const id = keys[i];
+        if (state.military[id] === undefined) continue;
+        const dv = (ctrl.deltaMilitary[id] | 0) || 0;
+        if (!dv) continue;
+        state.military[id] = clamp((state.military[id] | 0) + dv, 0, 999);
+      }
+    }
+
+    // item transfers: only allow exact matches in inventories
+    const give = Array.isArray(ctrl.transferGiveItems) ? ctrl.transferGiveItems : [];
+    const take = Array.isArray(ctrl.transferTakeItems) ? ctrl.transferTakeItems : [];
+
     // GIVE: player -> other
-    for (let i = 0; i < ctrl.transferGiveItems.length; i++) {
-      const item = ctrl.transferGiveItems[i];
+    for (let i = 0; i < give.length; i++) {
+      const item = give[i];
       const idx = state.invPlayer.indexOf(item);
       if (idx !== -1) {
         state.invPlayer.splice(idx, 1);
         state.invOther[rid].push(item);
+        state._invVersion++;
       }
     }
+
     // TAKE: other -> player
-    for (let i = 0; i < ctrl.transferTakeItems.length; i++) {
-      const item = ctrl.transferTakeItems[i];
+    for (let i = 0; i < take.length; i++) {
+      const item = take[i];
       const arr = state.invOther[rid];
       const idx = arr.indexOf(item);
       if (idx !== -1) {
         arr.splice(idx, 1);
         state.invPlayer.push(item);
+        state._invVersion++;
       }
     }
 
     // world events
-    for (let i = 0; i < ctrl.worldEvents.length && i < 4; i++) worldAdd(ctrl.worldEvents[i]);
+    for (let i = 0; i < ctrl.worldEvents.length && i < 5; i++) worldAdd(ctrl.worldEvents[i]);
 
-    // store summary as a small system note in chat
-    if (ctrl.summary) chatAdd(rid, "system", `Outcome: ${ctrl.summary}`);
+    // store outcome for UI
+    state.lastOutcomeByRealm[rid] = {
+      tone: String(ctrl.tone || "").slice(0, 80),
+      intent: String(ctrl.intent || "").slice(0, 120),
+      summary: String(ctrl.summary || "").slice(0, 160),
+      dGoldP: dGP,
+      dGoldO: dGO,
+      dWarRisk: ctrl.deltaWarRisk | 0,
+      dRel: { ...ctrl.deltaRelations },
+      flags: (ctrl.flags || []).slice(0, 6).map(String),
+      suggestions: (ctrl.suggestions || []).slice(0, 6).map(String),
+    };
   }
 
-  // ---------------- LLM prompt + OpenRouter ----------------
+  // ---------------- offer builder helpers ----------------
+  function resetOffer() {
+    state.offer.giveGold = 0;
+    state.offer.takeGold = 0;
+    state.offer.giveItems = {};
+    state.offer.takeItems = {};
+  }
+
+  function offerToText(realmId) {
+    const gGold = Math.max(0, (state.offer.giveGold | 0) || 0);
+    const tGold = Math.max(0, (state.offer.takeGold | 0) || 0);
+
+    const giveItems = Object.keys(state.offer.giveItems).filter((k) => state.offer.giveItems[k]);
+    const takeItems = Object.keys(state.offer.takeItems).filter((k) => state.offer.takeItems[k]);
+
+    if (!gGold && !tGold && !giveItems.length && !takeItems.length) return "";
+
+    const r = REALM_BY_ID[realmId];
+    let s = "";
+    if (gGold) s += `England gives ${gGold}g. `;
+    if (tGold) s += `England asks ${tGold}g. `;
+    if (giveItems.length) s += `England gives artifacts: ${giveItems.join("; ")}. `;
+    if (takeItems.length) s += `England asks artifacts: ${takeItems.join("; ")}. `;
+    s += `Target: ${r.name}.`;
+    return s.trim();
+  }
+
+  function applyOfferLocally(realmId) {
+    const gGold = Math.max(0, state.offer.giveGold | 0);
+    const tGold = Math.max(0, state.offer.takeGold | 0);
+
+    if (gGold > state.playerGold) return { ok: false, err: "Not enough gold to give." };
+    if (tGold > (state.goldOther[realmId] || 0)) return { ok: false, err: "They don't have that much gold." };
+
+    // validate item presence
+    const giveItems = Object.keys(state.offer.giveItems).filter((k) => state.offer.giveItems[k]);
+    const takeItems = Object.keys(state.offer.takeItems).filter((k) => state.offer.takeItems[k]);
+
+    for (let i = 0; i < giveItems.length; i++) if (state.invPlayer.indexOf(giveItems[i]) === -1) return { ok: false, err: `You don't have: ${giveItems[i]}` };
+    for (let i = 0; i < takeItems.length; i++) if (state.invOther[realmId].indexOf(takeItems[i]) === -1) return { ok: false, err: `They don't have: ${takeItems[i]}` };
+
+    // transfer gold
+    state.playerGold -= gGold;
+    state.goldOther[realmId] = Math.max(0, (state.goldOther[realmId] || 0) + gGold);
+
+    state.playerGold += tGold;
+    state.goldOther[realmId] = Math.max(0, (state.goldOther[realmId] || 0) - tGold);
+
+    // transfer items
+    for (let i = 0; i < giveItems.length; i++) {
+      const item = giveItems[i];
+      const idx = state.invPlayer.indexOf(item);
+      state.invPlayer.splice(idx, 1);
+      state.invOther[realmId].push(item);
+    }
+    for (let i = 0; i < takeItems.length; i++) {
+      const item = takeItems[i];
+      const idx = state.invOther[realmId].indexOf(item);
+      state.invOther[realmId].splice(idx, 1);
+      state.invPlayer.push(item);
+    }
+
+    state._invVersion++;
+    return { ok: true, err: "" };
+  }
+
+  // ---------------- OpenRouter ----------------
   function buildHeaders() {
     return {
       Authorization: `Bearer ${OR_KEY}`,
@@ -552,45 +796,56 @@ export function startGame(ctx) {
 
   function systemPromptFor(realmId) {
     const r = REALM_BY_ID[realmId];
+
     return (
       "You are simulating diplomacy messages in a lightweight strategy sandbox.\n" +
       "Setting: year 1444, but everyone speaks in plain modern-day English.\n" +
-      "Player is England. You are the ruler/minister of the target realm.\n\n" +
-      "Style rules:\n" +
-      "- Keep replies SHORT: 3–10 sentences total.\n" +
-      "- No flowery 'esteemed envoy' stuff. Be blunt, concrete, and transactional.\n" +
-      "- Make it feel like two leaders negotiating over money, favours, artifacts, and territory pressure.\n\n" +
+      "Player is England. You are the leader/minister of the target realm.\n\n" +
+      "Hard style rules:\n" +
+      "- Keep replies SHORT: 3–10 sentences.\n" +
+      "- No flowery 'esteemed envoy' language. Be blunt, concrete, transactional.\n" +
+      "- If you want something: ask clearly, with a reason, and a fallback.\n" +
+      "- If you threaten: keep it realistic and tied to military balance.\n\n" +
+      "HARD CONSTRAINTS (do not violate):\n" +
+      "- Do NOT request artifacts you already own.\n" +
+      "- Only request artifacts from PLAYER_CAN_GIVE.\n" +
+      "- Only offer artifacts from PLAYER_CAN_TAKE.\n" +
+      "- If you want something not in the lists, ask for a concession instead (gold, access, treaty, guarantee).\n" +
+      "- The control block must be ONLY the control text and must use the exact wrapper tags.\n\n" +
       "You MUST output TWO parts:\n" +
-      "1) The freeform message text.\n" +
-      "2) Exactly one control block delimited by [[DIPLOMACY_V1]] and [[/DIPLOMACY_V1]].\n\n" +
+      "1) A freeform message (dialogue) meant for a chat UI.\n" +
+      `2) Exactly one control block delimited by ${BLOCK_OPEN} and ${BLOCK_CLOSE}.\n\n` +
       "Control block format (ASCII only inside the block):\n" +
-      "SPEAKER: <short name>\n" +
-      "TONE: <e.g. calm / annoyed / upbeat / threatening>\n" +
+      "SPEAKER: <must be exactly the target realm name>\n" +
+      "TONE: <calm / annoyed / upbeat / threatening / etc>\n" +
       "INTENT: <one line>\n" +
       "SUMMARY: <one line: what just happened>\n" +
       `TO_REALM: ${realmId}\n` +
-      "DELTA_GOLD_PLAYER: <int -500..+500>\n" +
-      "DELTA_GOLD_OTHER: <int -500..+500>\n" +
+      "DELTA_GOLD_PLAYER: <int -500..+500>  # England gold change\n" +
+      "DELTA_GOLD_OTHER: <int -500..+500>   # target gold change\n" +
+      "DELTA_WAR_RISK: <int -25..+25>       # global war risk change\n" +
       "DELTA_RELATIONS:\n" +
       "  SCO: <int -25..+25>\n" +
       "  IRE: <int -25..+25>\n" +
       "  FRA: <int -25..+25>\n" +
       "  CAS: <int -25..+25>\n" +
       "  POR: <int -25..+25>\n" +
+      "DELTA_MILITARY:\n" +
+      "  ENG: <int -10..+10>\n" +
+      "  SCO: <int -10..+10>\n" +
+      "  IRE: <int -10..+10>\n" +
+      "  FRA: <int -10..+10>\n" +
+      "  CAS: <int -10..+10>\n" +
+      "  POR: <int -10..+10>\n" +
       "TRANSFER_ITEMS:\n" +
-      "  GIVE: <semicolon-separated item names that the PLAYER gives>\n" +
-      "  TAKE: <semicolon-separated item names that the PLAYER receives>\n" +
+      "  GIVE: <semicolon-separated artifact names that ENGLAND gives>\n" +
+      "  TAKE: <semicolon-separated artifact names that ENGLAND receives>\n" +
       "WORLD_EVENTS:\n" +
       "- <0–4 bullet items>\n" +
       "FLAGS:\n" +
       "- <0–5 bullet items>\n" +
       "SUGGESTIONS:\n" +
-      "- <0–5 bullet items: good next moves for the player>\n\n" +
-      "Important:\n" +
-      "- Always include all five DELTA_RELATIONS lines.\n" +
-      "- Keep deltas small most of the time.\n" +
-      "- Don't invent items; only trade items that exist in inventories.\n" +
-      "- Don't write JSON.\n" +
+      "- <0–5 bullet items>\n\n" +
       `Persona for ${r.name}: ${r.aiStyle}.\n`
     );
   }
@@ -599,20 +854,29 @@ export function startGame(ctx) {
     const r = REALM_BY_ID[realmId];
     const rel = state.relations[realmId] || 0;
 
-    const invPlayer = state.invPlayer.slice(0, 12).join("; ") || "(none)";
-    const invOther = state.invOther[realmId].slice(0, 12).join("; ") || "(none)";
+    const invPlayer = state.invPlayer.slice(0, 16);
+    const invOther = state.invOther[realmId].slice(0, 16);
 
     const timeStr = `${monthName(state.month)} ${state.year}`;
     const relStr =
       rel >= 30 ? "friendly" : rel >= 10 ? "warm" : rel >= -10 ? "neutral" : rel >= -30 ? "cold" : "hostile";
 
-    // take last chat snippets
+    const war = state.warRisk | 0;
+    const milEng = state.military.ENG | 0;
+    const milThem = state.military[realmId] | 0;
+    const cred = clamp(milEng / Math.max(1, milThem), 0.2, 3.0);
+
+    const canGiveGold = Math.min(500, Math.floor(state.playerGold));
+    const canTakeGold = Math.min(500, Math.floor(state.goldOther[realmId] || 0));
+
+    // recent chat
     const log = state.chats[realmId] || [];
     const recent = log.slice(-10);
     let recap = "";
     for (let i = 0; i < recent.length; i++) {
       const m = recent[i];
-      const who = m.who === "player" ? "ENGLAND" : m.who === "other" ? r.name.toUpperCase() : "SYSTEM";
+      const who =
+        m.who === "player" ? "ENGLAND" : m.who === "other" ? r.name.toUpperCase() : "SYSTEM";
       const t = (m.text || "").replace(/\s+/g, " ").trim();
       recap += `${who}: ${t.slice(0, 280)}\n`;
     }
@@ -623,15 +887,19 @@ export function startGame(ctx) {
       `TIME: ${timeStr}\n` +
       `TARGET: ${r.name} (capital: ${r.capital})\n` +
       `RELATIONSHIP: ${relStr} (${rel})\n` +
+      `WAR_RISK: ${war}/100\n` +
+      `MILITARY: England=${milEng}  ${r.name}=${milThem}  THREAT_CREDIBILITY=${cred.toFixed(2)}\n` +
       `ENGLAND_GOLD: ${Math.round(state.playerGold)}\n` +
       `${r.name}_GOLD: ${Math.round(state.goldOther[realmId] || 0)}\n` +
-      `ENGLAND_ARTIFACTS: ${invPlayer}\n` +
-      `${r.name}_ARTIFACTS: ${invOther}\n` +
+      `PLAYER_CAN_GIVE_GOLD_MAX: ${canGiveGold}\n` +
+      `PLAYER_CAN_TAKE_GOLD_MAX: ${canTakeGold}\n` +
+      `PLAYER_CAN_GIVE (artifacts England can give): ${invPlayer.length ? invPlayer.join("; ") : "(none)"}\n` +
+      `PLAYER_CAN_TAKE (artifacts England can receive): ${invOther.length ? invOther.join("; ") : "(none)"}\n` +
       `WORLD_RECENT: ${world || "(none)"}\n\n` +
       `PLAYER_MESSAGE:\n${String(playerText || "").trim()}\n\n` +
-      (offerText ? `PLAYER_OFFER:\n${offerText}\n\n` : "") +
-      `RECENT_CHAT:\n${recap || "(none)"}\n` +
-      `Reminder: short blunt modern English + one [[DIPLOMACY_V1]] block.\n`
+      (offerText ? `PLAYER_OFFER_DRAFT:\n${offerText}\n\n` : "") +
+      `RECENT_CHAT:\n${recap || "(none)"}\n\n` +
+      `Reminder:\n- Dialogue stays short, modern, blunt.\n- Control block MUST use the wrapper tags and MUST obey the inventory constraints.\n`
     );
   }
 
@@ -730,73 +998,6 @@ export function startGame(ctx) {
     }
   }
 
-  // ---------------- offer builder helpers ----------------
-  function resetOffer() {
-    state.offer.giveGold = 0;
-    state.offer.takeGold = 0;
-    state.offer.giveItems = {};
-    state.offer.takeItems = {};
-  }
-
-  function offerToText(realmId) {
-    const gGold = Math.max(0, (state.offer.giveGold | 0) || 0);
-    const tGold = Math.max(0, (state.offer.takeGold | 0) || 0);
-
-    const giveItems = Object.keys(state.offer.giveItems).filter((k) => state.offer.giveItems[k]);
-    const takeItems = Object.keys(state.offer.takeItems).filter((k) => state.offer.takeItems[k]);
-
-    if (!gGold && !tGold && !giveItems.length && !takeItems.length) return "";
-
-    let s = "";
-    if (gGold) s += `England gives ${gGold}g. `;
-    if (tGold) s += `England asks ${tGold}g. `;
-    if (giveItems.length) s += `England gives artifacts: ${giveItems.join("; ")}. `;
-    if (takeItems.length) s += `England asks artifacts: ${takeItems.join("; ")}. `;
-    s += `Target realm: ${REALM_BY_ID[realmId].name}.`;
-    return s.trim();
-  }
-
-  function applyOfferLocally(realmId) {
-    // optional: you can use "Offer as Draft" without applying;
-    // this function applies immediately (used if player wants a quick mechanical offer)
-    const gGold = Math.max(0, state.offer.giveGold | 0);
-    const tGold = Math.max(0, state.offer.takeGold | 0);
-
-    if (gGold > state.playerGold) return false;
-    if (tGold > (state.goldOther[realmId] || 0)) return false;
-
-    // transfer gold
-    state.playerGold -= gGold;
-    state.goldOther[realmId] = Math.max(0, (state.goldOther[realmId] || 0) + gGold);
-
-    state.playerGold += tGold;
-    state.goldOther[realmId] = Math.max(0, (state.goldOther[realmId] || 0) - tGold);
-
-    // items
-    const giveItems = Object.keys(state.offer.giveItems).filter((k) => state.offer.giveItems[k]);
-    const takeItems = Object.keys(state.offer.takeItems).filter((k) => state.offer.takeItems[k]);
-
-    for (let i = 0; i < giveItems.length; i++) {
-      const item = giveItems[i];
-      const idx = state.invPlayer.indexOf(item);
-      if (idx !== -1) {
-        state.invPlayer.splice(idx, 1);
-        state.invOther[realmId].push(item);
-      }
-    }
-    for (let i = 0; i < takeItems.length; i++) {
-      const item = takeItems[i];
-      const arr = state.invOther[realmId];
-      const idx = arr.indexOf(item);
-      if (idx !== -1) {
-        arr.splice(idx, 1);
-        state.invPlayer.push(item);
-      }
-    }
-
-    return true;
-  }
-
   // ---------------- UI ----------------
   let ui = null;
 
@@ -812,7 +1013,22 @@ export function startGame(ctx) {
       color: "#dff6ff",
       font: "14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       zIndex: "9999",
+      pointerEvents: "auto",
     });
+
+    const css = el("style");
+    css.textContent = `
+      #simlab-diplo-root { box-sizing: border-box; }
+      #simlab-diplo-root * { box-sizing: border-box; }
+      #simlab-diplo-root input[type="checkbox"]{ accent-color:#3dfcff; }
+      #simlab-diplo-root ::-webkit-scrollbar{ height:10px; width:10px; }
+      #simlab-diplo-root ::-webkit-scrollbar-thumb{ background: rgba(120,180,255,0.22); border-radius: 10px; }
+      #simlab-diplo-root ::-webkit-scrollbar-track{ background: rgba(0,0,0,0.25); border-radius: 10px; }
+      @media (max-width: 1120px) {
+        #simlab-diplo-root { flex-direction: column; }
+        #simlab-diplo-left, #simlab-diplo-right { width: auto !important; }
+      }
+    `;
 
     const cardStyle = {
       borderRadius: "14px",
@@ -826,8 +1042,9 @@ export function startGame(ctx) {
       minHeight: "0",
     };
 
-    // Left: realms list + world timeline
+    // Left: realms + world feed
     const left = el("div", { ...cardStyle, width: "280px", flex: "0 0 auto" });
+    left.id = "simlab-diplo-left";
 
     const leftHead = el("div", {
       padding: "12px",
@@ -842,7 +1059,29 @@ export function startGame(ctx) {
     title.textContent = "Diplomacy";
     const time = el("div", { fontSize: "12px", opacity: "0.85", textAlign: "right" });
     leftHead.appendChild(title);
-    leftHead.appendChild(time);
+    // Right side of header: time + reset-all button
+    const headRightTop = el("div", { display: "flex", gap: "8px", alignItems: "center" });
+    const resetAllBtn = btn("Reset All");
+    resetAllBtn.title = "Clear all saved SimLab data for this game and reload";
+    resetAllBtn.onclick = () => {
+      if (!confirm("Reset all saved Diplomacy data? This will remove saved progress and cannot be undone.")) return;
+      // Collect simlab.* keys first (safe to mutate localStorage afterwards)
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("simlab.")) keys.push(k);
+      }
+      keys.forEach((k) => {
+        try { localStorage.removeItem(k); } catch (e) {}
+        try { localStorage.removeItem(k + "_ts"); } catch (e) {}
+      });
+      try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(SAVE_KEY + "_ts"); } catch (e) {}
+      flash("All saved data cleared. Reloading...");
+      setTimeout(() => location.reload(), 300);
+    };
+    headRightTop.appendChild(time);
+    headRightTop.appendChild(resetAllBtn);
+    leftHead.appendChild(headRightTop);
 
     const realmList = el("div", { padding: "8px", display: "flex", flexDirection: "column", gap: "6px" });
 
@@ -869,7 +1108,14 @@ export function startGame(ctx) {
       top.appendChild(name);
       top.appendChild(rel);
 
-      const sub = el("div", { marginTop: "3px", fontSize: "12px", opacity: "0.8", display: "flex", justifyContent: "space-between" });
+      const sub = el("div", {
+        marginTop: "3px",
+        fontSize: "12px",
+        opacity: "0.8",
+        display: "flex",
+        justifyContent: "space-between",
+        gap: "10px",
+      });
       const cap = el("div", {});
       cap.textContent = r.capital;
       const gold = el("div", { fontWeight: "800" });
@@ -883,7 +1129,7 @@ export function startGame(ctx) {
         state.selectedRealm = realmId;
         ensureIntro(realmId);
         resetOffer();
-        update();
+        updateAll(true);
       };
 
       return { row, rel, gold };
@@ -896,7 +1142,7 @@ export function startGame(ctx) {
       realmList.appendChild(realmRows[id].row);
     }
 
-    const leftMidDivider = el("div", { height: "1px", background: "rgba(120,180,255,0.12)" });
+    const divider = el("div", { height: "1px", background: "rgba(120,180,255,0.12)" });
 
     const worldWrap = el("div", { padding: "10px 12px", display: "flex", flexDirection: "column", gap: "6px", minHeight: "0" });
     const worldTitle = el("div", { fontSize: "12px", fontWeight: "950", opacity: "0.9" });
@@ -918,7 +1164,7 @@ export function startGame(ctx) {
 
     left.appendChild(leftHead);
     left.appendChild(realmList);
-    left.appendChild(leftMidDivider);
+    left.appendChild(divider);
     left.appendChild(worldWrap);
 
     // Middle: chat
@@ -936,8 +1182,7 @@ export function startGame(ctx) {
 
     const peer = el("div", { display: "flex", flexDirection: "column", gap: "2px", minWidth: "220px" });
     const peerName = el("div", { fontWeight: "950", fontSize: "14px" });
-    const peerSub = el("div", { fontSize: "12px", opacity: "0.85" });
-
+    const peerSub = el("div", { fontSize: "12px", opacity: "0.85", lineHeight: "1.2" });
     peer.appendChild(peerName);
     peer.appendChild(peerSub);
 
@@ -997,7 +1242,7 @@ export function startGame(ctx) {
       });
 
       const b = el("div", {
-        maxWidth: "780px",
+        maxWidth: "820px",
         width: "fit-content",
         padding: "10px 12px",
         borderRadius: "14px",
@@ -1010,15 +1255,15 @@ export function startGame(ctx) {
         lineHeight: "1.35",
       });
 
+      const t = el("div", {});
+      t.textContent = text;
+      b.appendChild(t);
+
       if (meta) {
         const m = el("div", { fontSize: "11px", opacity: "0.75", marginTop: "6px" });
         m.textContent = meta;
         b.appendChild(m);
       }
-
-      const t = el("div", {});
-      t.textContent = text;
-      b.insertBefore(t, b.firstChild);
 
       wrap.appendChild(b);
       return wrap;
@@ -1038,7 +1283,7 @@ export function startGame(ctx) {
 
     const input = el("textarea", {
       width: "100%",
-      height: "92px",
+      height: "96px",
       padding: "10px 10px",
       borderRadius: "12px",
       border: "1px solid rgba(120,180,255,0.20)",
@@ -1048,8 +1293,16 @@ export function startGame(ctx) {
       resize: "vertical",
       font: "650 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
       lineHeight: "1.35",
-      boxSizing: "border-box",
     });
+
+    input.onkeydown = (e) => {
+      // Only Ctrl+Enter sends. Let space / r / etc be normal typing.
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        doSend();
+      }
+      e.stopPropagation();
+    };
 
     const composeRow = el("div", { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
     const sendBtn = btn("Send (Action)");
@@ -1067,8 +1320,9 @@ export function startGame(ctx) {
     mid.appendChild(chatScroll);
     mid.appendChild(composer);
 
-    // Right: your stats + offer builder + settings
-    const right = el("div", { ...cardStyle, width: "360px", flex: "0 0 auto" });
+    // Right: stats + offer builder + outcome + settings
+    const right = el("div", { ...cardStyle, width: "380px", flex: "0 0 auto" });
+    right.id = "simlab-diplo-right";
 
     const rightHead = el("div", {
       padding: "12px",
@@ -1086,27 +1340,48 @@ export function startGame(ctx) {
 
     const rightBody = el("div", { padding: "12px", display: "flex", flexDirection: "column", gap: "10px", minHeight: "0" });
 
-    const relBox = el("div", {
-      borderRadius: "12px",
-      border: "1px solid rgba(120,180,255,0.12)",
-      padding: "10px",
-      background: "rgba(8,12,18,0.45)",
-    });
-    const relTitle = el("div", { fontWeight: "950", fontSize: "12px", opacity: "0.9" });
-    relTitle.textContent = "Relations";
+    function box(titleText) {
+      const b = el("div", {
+        borderRadius: "12px",
+        border: "1px solid rgba(120,180,255,0.12)",
+        padding: "10px",
+        background: "rgba(8,12,18,0.45)",
+      });
+      const t = el("div", { fontWeight: "950", fontSize: "12px", opacity: "0.9" });
+      t.textContent = titleText;
+      b.appendChild(t);
+      return { b, t };
+    }
+
+    const topStats = box("State");
+    const topStatsBody = el("div", { marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
+
+    function statPill(labelText) {
+      const p = el("div", {
+        padding: "8px",
+        borderRadius: "12px",
+        border: "1px solid rgba(120,180,255,0.10)",
+        background: "rgba(0,0,0,0.24)",
+      });
+      const l = el("div", { fontSize: "11px", opacity: "0.75", fontWeight: "900" });
+      l.textContent = labelText;
+      const v = el("div", { fontSize: "13px", fontWeight: "950", marginTop: "4px" });
+      p.appendChild(l);
+      p.appendChild(v);
+      return { p, v };
+    }
+
+    const warP = statPill("War risk");
+    const milP = statPill("Military");
+    topStatsBody.appendChild(warP.p);
+    topStatsBody.appendChild(milP.p);
+    topStats.b.appendChild(topStatsBody);
+
+    const relBox = box("Relations");
     const relList = el("div", { marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px" });
+    relBox.b.appendChild(relList);
 
-    relBox.appendChild(relTitle);
-    relBox.appendChild(relList);
-
-    const invBox = el("div", {
-      borderRadius: "12px",
-      border: "1px solid rgba(120,180,255,0.12)",
-      padding: "10px",
-      background: "rgba(8,12,18,0.45)",
-    });
-    const invTitle = el("div", { fontWeight: "950", fontSize: "12px", opacity: "0.9" });
-    invTitle.textContent = "Artifacts";
+    const invBox = box("Artifacts");
     const invBody = el("div", { marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
 
     const invYou = el("div", {
@@ -1118,7 +1393,9 @@ export function startGame(ctx) {
       fontSize: "12px",
       lineHeight: "1.35",
       overflow: "auto",
+      whiteSpace: "pre-wrap",
     });
+
     const invThem = el("div", {
       borderRadius: "12px",
       border: "1px solid rgba(120,180,255,0.10)",
@@ -1128,55 +1405,48 @@ export function startGame(ctx) {
       fontSize: "12px",
       lineHeight: "1.35",
       overflow: "auto",
+      whiteSpace: "pre-wrap",
     });
 
     invBody.appendChild(invYou);
     invBody.appendChild(invThem);
+    invBox.b.appendChild(invBody);
 
-    invBox.appendChild(invTitle);
-    invBox.appendChild(invBody);
-
-    const offerBox = el("div", {
-      borderRadius: "12px",
-      border: "1px solid rgba(120,180,255,0.12)",
-      padding: "10px",
-      background: "rgba(8,12,18,0.45)",
-      minHeight: "0",
-    });
-    const offerTitle = el("div", { fontWeight: "950", fontSize: "12px", opacity: "0.9" });
-    offerTitle.textContent = "Offer Builder (optional)";
-
+    const offerBox = box("Offer Builder (mechanical, optional)");
     const offerGrid = el("div", { marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
 
-    const giveGold = el("input", {
-      width: "100%",
-      padding: "8px 10px",
-      borderRadius: "12px",
-      border: "1px solid rgba(120,180,255,0.14)",
-      background: "rgba(0,0,0,0.30)",
-      color: "#dff6ff",
-      outline: "none",
-      font: "800 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
-      boxSizing: "border-box",
-    });
-    giveGold.type = "number";
-    giveGold.min = "0";
-    giveGold.step = "1";
+    function numIn() {
+      const i = el("input", {
+        width: "100%",
+        padding: "8px 10px",
+        borderRadius: "12px",
+        border: "1px solid rgba(120,180,255,0.14)",
+        background: "rgba(0,0,0,0.30)",
+        color: "#dff6ff",
+        outline: "none",
+        font: "800 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+      });
+      i.type = "number";
+      i.min = "0";
+      i.step = "1";
+      return i;
+    }
 
-    const takeGold = giveGold.cloneNode(true);
-    takeGold.min = "0";
+    function labSmall(t) {
+      const d = el("div", { fontSize: "11px", opacity: "0.75", fontWeight: "900", marginBottom: "4px" });
+      d.textContent = t;
+      return d;
+    }
 
-    const giveGoldLab = el("div", { fontSize: "11px", opacity: "0.75", fontWeight: "900" });
-    giveGoldLab.textContent = "You give gold";
-    const takeGoldLab = el("div", { fontSize: "11px", opacity: "0.75", fontWeight: "900" });
-    takeGoldLab.textContent = "You ask gold";
+    const giveGold = numIn();
+    const takeGold = numIn();
 
-    const giveWrap = el("div", {});
-    giveWrap.appendChild(giveGoldLab);
+    const giveWrap = el("div");
+    giveWrap.appendChild(labSmall("You give gold"));
     giveWrap.appendChild(giveGold);
 
-    const takeWrap = el("div", {});
-    takeWrap.appendChild(takeGoldLab);
+    const takeWrap = el("div");
+    takeWrap.appendChild(labSmall("You ask gold"));
     takeWrap.appendChild(takeGold);
 
     offerGrid.appendChild(giveWrap);
@@ -1190,7 +1460,7 @@ export function startGame(ctx) {
         border: "1px solid rgba(120,180,255,0.10)",
         padding: "8px",
         background: "rgba(0,0,0,0.22)",
-        minHeight: "84px",
+        minHeight: "98px",
         overflow: "auto",
       });
       const t = el("div", { fontSize: "11px", opacity: "0.75", fontWeight: "950", marginBottom: "6px" });
@@ -1203,7 +1473,6 @@ export function startGame(ctx) {
 
     const giveItemsPane = itemPane("You give artifacts");
     const takeItemsPane = itemPane("You ask artifacts");
-
     itemPanes.appendChild(giveItemsPane.p);
     itemPanes.appendChild(takeItemsPane.p);
 
@@ -1213,22 +1482,30 @@ export function startGame(ctx) {
     offerBtns.appendChild(offerResetBtn);
     offerBtns.appendChild(offerApplyBtn);
 
-    offerBox.appendChild(offerTitle);
-    offerBox.appendChild(offerGrid);
-    offerBox.appendChild(itemPanes);
-    offerBox.appendChild(offerBtns);
+    offerBox.b.appendChild(offerGrid);
+    offerBox.b.appendChild(itemPanes);
+    offerBox.b.appendChild(offerBtns);
 
-    const settingsBox = el("div", {
+    const outcomeBox = box("Last Outcome (parsed)");
+    const outcomeBody = el("div", {
+      marginTop: "8px",
       borderRadius: "12px",
-      border: "1px solid rgba(120,180,255,0.12)",
-      padding: "10px",
-      background: "rgba(8,12,18,0.45)",
+      border: "1px solid rgba(120,180,255,0.10)",
+      background: "rgba(0,0,0,0.24)",
+      padding: "8px",
+      fontSize: "12px",
+      lineHeight: "1.35",
+      whiteSpace: "pre-wrap",
+      overflow: "auto",
+      maxHeight: "170px",
+      minHeight: "110px",
     });
-    const setTitle = el("div", { fontWeight: "950", fontSize: "12px", opacity: "0.9" });
-    setTitle.textContent = "LLM Settings";
+    outcomeBox.b.appendChild(outcomeBody);
+
+    const settingsBox = box("LLM Settings");
     const setGrid = el("div", { marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
 
-    const inputStyle = {
+    const modelIn = el("input", {
       width: "100%",
       padding: "8px 10px",
       borderRadius: "12px",
@@ -1237,17 +1514,31 @@ export function startGame(ctx) {
       color: "#dff6ff",
       outline: "none",
       font: "800 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
-      boxSizing: "border-box",
-    };
-    const modelIn = el("input", inputStyle);
+    });
     modelIn.value = state.model;
 
     const tempIn = el("input", { width: "100%" });
     tempIn.type = "range";
     tempIn.min = "0";
-    tempIn.max = "1.3";
+    tempIn.max = "1.2";
     tempIn.step = "0.05";
     tempIn.value = String(state.temperature);
+
+    const maxTokIn = el("input", {
+      width: "100%",
+      padding: "8px 10px",
+      borderRadius: "12px",
+      border: "1px solid rgba(120,180,255,0.14)",
+      background: "rgba(0,0,0,0.30)",
+      color: "#dff6ff",
+      outline: "none",
+      font: "800 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+    });
+    maxTokIn.type = "number";
+    maxTokIn.min = "256";
+    maxTokIn.max = "1600";
+    maxTokIn.step = "32";
+    maxTokIn.value = String(state.maxTokens);
 
     const streamWrap = el("label", {
       display: "flex",
@@ -1268,102 +1559,71 @@ export function startGame(ctx) {
     streamWrap.appendChild(streamBox);
     streamWrap.appendChild(document.createTextNode("Stream"));
 
-    const maxTokIn = el("input", inputStyle);
-    maxTokIn.type = "number";
-    maxTokIn.min = "128";
-    maxTokIn.max = "2000";
-    maxTokIn.step = "32";
-    maxTokIn.value = String(state.maxTokens);
-
     setGrid.appendChild(modelIn);
     setGrid.appendChild(tempIn);
     setGrid.appendChild(maxTokIn);
     setGrid.appendChild(streamWrap);
 
     const setHint = el("div", { marginTop: "6px", fontSize: "11px", opacity: "0.70", lineHeight: "1.35" });
-    setHint.textContent =
-      "Use a better model if replies feel dumb. Lower temperature = more consistent, shorter, less cringe.";
+    setHint.textContent = "Recommended models: anthropic/claude-3.5-sonnet, openai/gpt-4.1-mini (try whichever feels best).";
 
-    settingsBox.appendChild(setTitle);
-    settingsBox.appendChild(setGrid);
-    settingsBox.appendChild(setHint);
+    settingsBox.b.appendChild(setGrid);
+    settingsBox.b.appendChild(setHint);
 
-    rightBody.appendChild(relBox);
-    rightBody.appendChild(invBox);
-    rightBody.appendChild(offerBox);
-    rightBody.appendChild(settingsBox);
+    rightBody.appendChild(topStats.b);
+    rightBody.appendChild(relBox.b);
+    rightBody.appendChild(invBox.b);
+    rightBody.appendChild(offerBox.b);
+    rightBody.appendChild(outcomeBox.b);
+    rightBody.appendChild(settingsBox.b);
 
     right.appendChild(rightHead);
     right.appendChild(rightBody);
 
-    // Assemble layout
+    // assemble
+    root.id = "simlab-diplo-root";
+    uiRoot.appendChild(css);
+    uiRoot.appendChild(root);
     root.appendChild(left);
     root.appendChild(mid);
     root.appendChild(right);
 
-    // Responsive tweaks: collapse sidebars if needed
-    const css = el("style");
-    css.textContent = `
-      @media (max-width: 1080px) {
-        #simlab-diplo-root { flex-direction: column; }
-        #simlab-diplo-left, #simlab-diplo-right { width: auto !important; }
-      }
-    `;
-    root.id = "simlab-diplo-root";
-    left.id = "simlab-diplo-left";
-    right.id = "simlab-diplo-right";
-
-    uiRoot.appendChild(css);
-    uiRoot.appendChild(root);
-
-    // ------------ UI interactions ------------
-    input.value = "We should make a deal. Here's what I want, and here's what I'm willing to offer.";
-    input.oninput = () => {};
-    input.onkeydown = (e) => {
-      // DO NOT bind global pause/reset keys; only handle Ctrl+Enter to send.
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        doSend();
-      }
-      // let space, r, etc work normally
-      e.stopPropagation();
-    };
-
+    // ---------------- UI behaviour ----------------
     giveGold.value = String(state.offer.giveGold | 0);
     takeGold.value = String(state.offer.takeGold | 0);
 
     giveGold.oninput = () => {
       state.offer.giveGold = clamp(parseInt(giveGold.value || "0", 10) || 0, 0, 999999);
-      update();
+      updateAll(false);
     };
     takeGold.oninput = () => {
       state.offer.takeGold = clamp(parseInt(takeGold.value || "0", 10) || 0, 0, 999999);
-      update();
+      updateAll(false);
     };
 
     offerResetBtn.onclick = () => {
       resetOffer();
       giveGold.value = "0";
       takeGold.value = "0";
-      update();
+      updateAll(true);
       flash("Offer reset.", 0.9);
     };
 
     offerApplyBtn.onclick = () => {
       const rid = state.selectedRealm;
-      const ok = applyOfferLocally(rid);
-      if (!ok) {
-        flash("Offer invalid (not enough gold or missing item).", 1.4);
-        update();
+      const res = applyOfferLocally(rid);
+      if (!res.ok) {
+        flash(res.err || "Offer invalid.", 1.4);
+        updateAll(false);
         return;
       }
-      // Small direct mechanical effect: relation bump (deal goodwill)
+      // goodwill bump
       state.relations[rid] = clamp((state.relations[rid] || 0) + 3, -100, 100);
-      chatAdd(rid, "system", "You applied a direct trade transfer (mechanical). Mention it in your message if you want them to react.");
+      chatAdd(rid, "system", "You applied a mechanical trade transfer. Mention it if you want them to react in-character.");
       resetOffer();
       giveGold.value = "0";
       takeGold.value = "0";
-      update();
+      updateAll(true);
       saveNow();
       flash("Offer applied mechanically.", 1.0);
     };
@@ -1373,28 +1633,26 @@ export function startGame(ctx) {
       const offerText = offerToText(rid);
       if (!offerText) {
         flash("Build an offer first (gold or artifacts).", 1.2);
-        update();
+        updateAll(false);
         return;
       }
       const cur = input.value || "";
-      const insert =
-        (cur.trim() ? cur.trim() + "\n\n" : "") +
-        `Offer draft (copy/edit):\n${offerText}\n`;
+      const insert = (cur.trim() ? cur.trim() + "\n\n" : "") + `Offer draft (copy/edit):\n${offerText}\n`;
       input.value = insert;
-      flash("Offer draft inserted into your message.", 1.0);
-      update();
+      flash("Offer draft inserted.", 0.9);
+      updateAll(false);
     };
 
     clearBtn.onclick = () => {
       input.value = "";
-      update();
+      updateAll(false);
     };
 
     stopBtn.onclick = () => {
       if (!state.busy) return;
       cancelRequest();
       flash("Cancelled.", 0.9);
-      update();
+      updateAll(false);
     };
 
     endTurnBtn.onclick = () => {
@@ -1402,7 +1660,7 @@ export function startGame(ctx) {
       advanceMonth();
       worldAdd(`Month advanced to ${monthName(state.month)} ${state.year}.`);
       flash("New month.", 0.9);
-      update();
+      updateAll(true);
       saveNow();
     };
 
@@ -1412,61 +1670,24 @@ export function startGame(ctx) {
       state.model = (modelIn.value || "").trim() || state.model;
       saveNow();
       flash("Model updated.", 0.8);
-      update();
+      updateAll(false);
     };
     tempIn.oninput = () => {
       state.temperature = clamp(parseFloat(tempIn.value), 0, 2);
       flash(`Temperature: ${state.temperature.toFixed(2)}`, 0.7);
-      update();
+      updateAll(false);
       saveNow();
     };
     maxTokIn.oninput = () => {
-      state.maxTokens = clamp(parseInt(maxTokIn.value || "700", 10) || 700, 128, 2000);
-      update();
+      state.maxTokens = clamp(parseInt(maxTokIn.value || "650", 10) || 650, 256, 2000);
+      updateAll(false);
       saveNow();
     };
     streamBox.onchange = () => {
       state.stream = !!streamBox.checked;
-      update();
+      updateAll(false);
       saveNow();
     };
-
-    function rebuildOfferLists() {
-      const rid = state.selectedRealm;
-      const youItems = state.invPlayer.slice(0, 64);
-      const themItems = (state.invOther[rid] || []).slice(0, 64);
-
-      giveItemsPane.list.innerHTML = "";
-      takeItemsPane.list.innerHTML = "";
-
-      function makeCheck(listEl, item, mapObj) {
-        const lab = el("label", { display: "flex", gap: "8px", alignItems: "center", cursor: "pointer", userSelect: "none" });
-        const box = document.createElement("input");
-        box.type = "checkbox";
-        box.checked = !!mapObj[item];
-        box.onchange = () => {
-          mapObj[item] = !!box.checked;
-          update();
-        };
-        const t = el("div", { fontSize: "12px" });
-        t.textContent = item;
-        lab.appendChild(box);
-        lab.appendChild(t);
-        listEl.appendChild(lab);
-      }
-
-      for (let i = 0; i < youItems.length; i++) makeCheck(giveItemsPane.list, youItems[i], state.offer.giveItems);
-      for (let i = 0; i < themItems.length; i++) makeCheck(takeItemsPane.list, themItems[i], state.offer.takeItems);
-
-      // prune stale selections
-      const keepGive = {};
-      for (let i = 0; i < youItems.length; i++) if (state.offer.giveItems[youItems[i]]) keepGive[youItems[i]] = true;
-      state.offer.giveItems = keepGive;
-
-      const keepTake = {};
-      for (let i = 0; i < themItems.length; i++) if (state.offer.takeItems[themItems[i]]) keepTake[themItems[i]] = true;
-      state.offer.takeItems = keepTake;
-    }
 
     function renderChat() {
       const rid = state.selectedRealm;
@@ -1482,7 +1703,6 @@ export function startGame(ctx) {
         chatScroll.appendChild(bubble(m.text, side, meta));
       }
 
-      // autoscroll to bottom
       requestAnimationFrame(() => {
         chatScroll.scrollTop = chatScroll.scrollHeight;
       });
@@ -1527,24 +1747,63 @@ export function startGame(ctx) {
     function renderInventories() {
       const rid = state.selectedRealm;
       const r = REALM_BY_ID[rid];
-      const you = state.invPlayer;
-      const them = state.invOther[rid] || [];
-      invYou.textContent = `You (${you.length}):\n${you.join("\n") || "(none)"}`;
-      invThem.textContent = `${r.name} (${them.length}):\n${them.join("\n") || "(none)"}`;
+      const youItems = state.invPlayer;
+      const themItems = state.invOther[rid] || [];
+      invYou.textContent = `You (${youItems.length}):\n${youItems.join("\n") || "(none)"}`;
+      invThem.textContent = `${r.name} (${themItems.length}):\n${themItems.join("\n") || "(none)"}`;
+    }
+
+    function renderOutcome() {
+      const rid = state.selectedRealm;
+      const out = state.lastOutcomeByRealm[rid];
+      if (!out) {
+        outcomeBody.textContent = "No parsed outcome yet.";
+        return;
+      }
+
+      const relLines = [];
+      for (let i = 0; i < otherIds.length; i++) {
+        const id = otherIds[i];
+        const dv = (out.dRel && out.dRel[id]) | 0;
+        if (dv) relLines.push(`${id}: ${dv > 0 ? "+" : ""}${dv}`);
+      }
+
+      const flags = out.flags && out.flags.length ? `Flags: ${out.flags.join(", ")}\n` : "";
+      const sugg = out.suggestions && out.suggestions.length ? `Suggestions: ${out.suggestions.join(" | ")}\n` : "";
+
+      outcomeBody.textContent =
+        `Tone: ${out.tone || "(n/a)"}\n` +
+        `Intent: ${out.intent || "(n/a)"}\n` +
+        `Summary: ${out.summary || "(n/a)"}\n\n` +
+        `Δ Gold (You): ${out.dGoldP > 0 ? "+" : ""}${out.dGoldP}\n` +
+        `Δ Gold (Them): ${out.dGoldO > 0 ? "+" : ""}${out.dGoldO}\n` +
+        `Δ War risk: ${out.dWarRisk > 0 ? "+" : ""}${out.dWarRisk}\n` +
+        (relLines.length ? `Δ Relations: ${relLines.join(" | ")}\n` : "Δ Relations: (none)\n") +
+        (flags ? `\n${flags}` : "") +
+        (sugg ? `${sugg}` : "");
     }
 
     function updateHeader() {
       time.textContent = `${monthName(state.month)} ${state.year}`;
       youGold.textContent = fmtGold(state.playerGold);
+
       const rid = state.selectedRealm;
       const r = REALM_BY_ID[rid];
+      const rel = state.relations[rid] || 0;
+
+      const milEng = state.military.ENG | 0;
+      const milThem = state.military[rid] | 0;
+      const cred = clamp(milEng / Math.max(1, milThem), 0.2, 3.0);
+
       peerName.textContent = r.name;
-      peerSub.textContent = `Capital: ${r.capital} • Their gold: ${fmtGold(state.goldOther[rid] || 0)} • Relation: ${fmtRel(state.relations[rid] || 0)}`;
+      peerSub.textContent =
+        `Capital: ${r.capital} • Their gold: ${fmtGold(state.goldOther[rid] || 0)} • Relation: ${fmtRel(rel)}\n` +
+        `Military: you ${milEng} vs them ${milThem} (cred ${cred.toFixed(2)})`;
+
       act.textContent = state.actionAvailable ? "Action: READY" : "Action: USED";
       act.style.borderColor = state.actionAvailable ? "rgba(61,252,255,0.22)" : "rgba(255,75,216,0.22)";
       act.style.color = state.actionAvailable ? "#3dfcff" : "#ff4bd8";
 
-      // left highlight
       for (let i = 0; i < otherIds.length; i++) {
         const id = otherIds[i];
         const rr = realmRows[id];
@@ -1555,6 +1814,11 @@ export function startGame(ctx) {
         rr.row.style.outline = id === state.selectedRealm ? "2px solid rgba(61,252,255,0.28)" : "none";
         rr.row.style.background = id === state.selectedRealm ? "rgba(8,12,18,0.88)" : "rgba(8,12,18,0.70)";
       }
+
+      // top stats
+      warP.v.textContent = `${state.warRisk | 0}/100`;
+      warP.v.style.color = state.warRisk >= 70 ? "#ff4bd8" : state.warRisk >= 40 ? "#b54bff" : "#3dfcff";
+      milP.v.textContent = `${milEng} (you)`;
     }
 
     function updateStatusLine() {
@@ -1570,9 +1834,7 @@ export function startGame(ctx) {
         statusLine.textContent = "Missing API key. Set VITE_OPENROUTER_API_KEY in .env and restart Vite.";
         return;
       }
-      statusLine.textContent = state.busy
-        ? "Waiting for reply… (Stop cancels)"
-        : "Tip: Ctrl+Enter sends. One action per month.";
+      statusLine.textContent = state.busy ? "Waiting for reply… (Stop cancels)" : "Tip: Ctrl+Enter sends. One action per month.";
     }
 
     function updateControls() {
@@ -1585,113 +1847,183 @@ export function startGame(ctx) {
       setDisabled(clearBtn, state.busy);
     }
 
+    // Offer checkboxes: build ONLY when needed (realm changed or inventory changed)
+    function rebuildOfferListsIfNeeded(force) {
+      const rid = state.selectedRealm;
+      const key = `${rid}:${state._invVersion}`;
+      if (!force && state._offerUiRealm === key) return;
+
+      state._offerUiRealm = key;
+
+      giveItemsPane.list.innerHTML = "";
+      takeItemsPane.list.innerHTML = "";
+
+      // prune stale selections (only on rebuild)
+      const youItems = state.invPlayer.slice(0, 64);
+      const themItems = state.invOther[rid].slice(0, 64);
+
+      const keepGive = {};
+      for (let i = 0; i < youItems.length; i++) if (state.offer.giveItems[youItems[i]]) keepGive[youItems[i]] = true;
+      state.offer.giveItems = keepGive;
+
+      const keepTake = {};
+      for (let i = 0; i < themItems.length; i++) if (state.offer.takeItems[themItems[i]]) keepTake[themItems[i]] = true;
+      state.offer.takeItems = keepTake;
+
+      function makeCheck(listEl, item, mapObj) {
+        const lab = el("label", {
+          display: "flex",
+          gap: "8px",
+          alignItems: "center",
+          cursor: "pointer",
+          userSelect: "none",
+          padding: "6px 6px",
+          borderRadius: "10px",
+          border: "1px solid rgba(120,180,255,0.08)",
+          background: "rgba(0,0,0,0.10)",
+        });
+
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = !!mapObj[item];
+        box.style.pointerEvents = "auto";
+
+        const t = el("div", { fontSize: "12px", lineHeight: "1.2" });
+        t.textContent = item;
+
+        // Make sure clicks always toggle reliably even if UI updates elsewhere.
+        box.addEventListener("click", (e) => {
+          e.stopPropagation();
+          mapObj[item] = !!box.checked;
+          // no full rebuild on toggle
+          updateAll(false);
+        });
+
+        lab.addEventListener("click", (e) => {
+          // Clicking label should toggle.
+          e.stopPropagation();
+          if (e.target !== box) {
+            box.checked = !box.checked;
+            mapObj[item] = !!box.checked;
+            updateAll(false);
+          }
+        });
+
+        lab.appendChild(box);
+        lab.appendChild(t);
+        listEl.appendChild(lab);
+      }
+
+      for (let i = 0; i < youItems.length; i++) makeCheck(giveItemsPane.list, youItems[i], state.offer.giveItems);
+      for (let i = 0; i < themItems.length; i++) makeCheck(takeItemsPane.list, themItems[i], state.offer.takeItems);
+    }
+
+    function renderWorldAndChat() {
+      renderChat();
+      renderWorld();
+    }
+
     async function doSend() {
       if (state.busy) return;
       if (!state.actionAvailable) {
         flash("You already used your action this month. End Month to continue.", 1.4);
-        update();
+        updateAll(false);
         return;
       }
       if (!OR_KEY) {
         flash("Missing API key. Set VITE_OPENROUTER_API_KEY in .env and restart Vite.", 2.0);
-        update();
+        updateAll(false);
         return;
       }
       const rid = state.selectedRealm;
       const text = (input.value || "").trim();
       if (!text) {
         flash("Write something first.", 1.0);
-        update();
+        updateAll(false);
         return;
       }
 
-      // consume action
       state.actionAvailable = false;
-
-      // add player chat
       chatAdd(rid, "player", text);
 
-      // offer text (optional)
       const offerText = offerToText(rid);
 
-      update();
+      updateAll(false);
       renderChat();
 
       const res = await callOpenRouter(rid, text, offerText);
       if (!res.ok) {
         state.lastError = res.err || "Error";
         chatAdd(rid, "system", `Comms failed: ${state.lastError}`);
-        // mild penalty: relation worsens a hair
         state.relations[rid] = clamp((state.relations[rid] || 0) - 2, -100, 100);
-        update();
+        state.warRisk = clamp(state.warRisk + 1, 0, 100);
+        updateAll(false);
         renderChat();
         saveNow();
         return;
       }
 
       const full = String(res.text || "");
-      const extracted = extractBlock(full);
+      const extracted = extractBlockBestEffort(full);
+      const dialogue = extracted.dialogue || "";
+      const replyText = dialogue.trim() ? dialogue.trim() : "(no message)";
 
-      if (!extracted) {
-        // still show text, but apply a small randomish mechanical outcome
-        const reply = full.trim() || "(no reply)";
-        chatAdd(rid, "other", reply);
-        chatAdd(rid, "system", "Control block missing: applied mild, generic outcome.");
+      // always show ONLY cleaned dialogue (never control text)
+      chatAdd(rid, "other", replyText);
+
+      if (!extracted.ok || !extracted.block) {
+        chatAdd(rid, "system", "Control block missing or malformed. No mechanical effects applied (except minor friction).");
         state.relations[rid] = clamp((state.relations[rid] || 0) - 1, -100, 100);
-        worldAdd(`${REALM_BY_ID[rid].name} sends an unclear response. Diplomatic friction rises.`);
-        update();
-        renderChat();
-        renderWorld();
+        state.warRisk = clamp(state.warRisk + 1, 0, 100);
+        updateAll(false);
+        renderWorldAndChat();
         saveNow();
         return;
       }
 
-      const replyText = extracted.dialogue || "(silent)";
       const ctrl = parseBlock(extracted.block);
 
-      // show only the dialogue (block is not shown)
-      chatAdd(rid, "other", replyText);
+      // enforce speaker correctness at UI level by ignoring it; still track it in outcome if you want.
+      // also enforce toRealm correctness
+      ctrl.toRealm = rid;
 
-      // apply mechanical effects
       applyControl(ctrl);
 
-      // show brief suggestion set as system bubbles (optional, capped)
-      if (ctrl.suggestions && ctrl.suggestions.length) {
-        chatAdd(rid, "system", `Suggestions: ${ctrl.suggestions.slice(0, 4).join(" | ")}`);
-      }
+      // show meta as system bubbles but not the raw control block
+      const out = state.lastOutcomeByRealm[rid];
+      if (out && out.summary) chatAdd(rid, "system", `Outcome: ${out.summary}`);
 
-      if (ctrl.flags && ctrl.flags.length) {
-        chatAdd(rid, "system", `Flags: ${ctrl.flags.slice(0, 5).join(", ")}`);
-      }
-
-      update();
-      renderChat();
-      renderWorld();
+      updateAll(true);
+      renderWorldAndChat();
       saveNow();
     }
 
-    function update() {
+    function updateAll(forceOfferRebuild) {
       updateHeader();
       updateControls();
       updateStatusLine();
       renderRelations();
       renderInventories();
+      renderOutcome();
+      rebuildOfferListsIfNeeded(!!forceOfferRebuild);
       renderWorld();
-      rebuildOfferLists();
       renderChat();
     }
 
-    update();
-    return { update };
+    // initial text
+    if (!(input.value || "").trim()) input.value = "What do you want this month? Be specific.";
+
+    updateAll(true);
+
+    return { updateAll };
   }
 
   ui = buildUI();
-  if (ui) ui.update();
+  if (ui && ui.updateAll) ui.updateAll(true);
 
   // ---------------- engine hooks ----------------
   function update(dt) {
-    state.paused = Engine.isPaused();
-    if (state.paused) return;
+    if (Engine.isPaused()) return;
 
     const tNow = nowSec();
     if (tNow >= state.autosaveAt) {
@@ -1702,7 +2034,6 @@ export function startGame(ctx) {
 
   function render() {
     Engine.gfx.clearBlack();
-    // no background text / no overlay clutter; UI handles everything
   }
 
   Engine.on("update", update);
@@ -1718,6 +2049,6 @@ export function startGame(ctx) {
     console.warn("[SimLab] kingdom-diplomacy-chat: ctx.uiRoot missing; UI cannot be created.");
   } else if (!OR_KEY) {
     flash("Missing API key. Set VITE_OPENROUTER_API_KEY in .env then restart Vite.", 6.0);
-    ui && ui.update();
+    ui && ui.updateAll && ui.updateAll(false);
   }
 }
