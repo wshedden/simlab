@@ -13,6 +13,7 @@ const GAMES = [
   { id: "kingdom-diplomacy-chat", name: "Kingdom Diplomacy Chat", desc: "Diplomacy sandbox with AI-driven realm negotiation.", href: "/play.html?game=kingdom-diplomacy-chat" },
   { id: "neon-capital-flows", name: "Neon Capital Flows", desc: "Visualise capital movement between neon markets (placeholder).", href: "/play.html?game=neon-capital-flows" },
   { id: "neon-venture", name: "Neon Venture", desc: "Startup/venture flow visualisation (placeholder).", href: "/play.html?game=neon-venture" },
+  { id: "kira-algorithm-of-judgement", name: "Kira: Algorithm of Judgment", desc: "Simulate a judgment algorithm in a neon courtroom (placeholder).", href: "/play.html?game=kira-algorithm-of-judgement" },
 ];
 
 const app = document.querySelector("#app");
