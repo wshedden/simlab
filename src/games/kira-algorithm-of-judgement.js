@@ -1473,11 +1473,18 @@ export function startGame(ctx) {
 
   function buildUI() {
     if (!uiRoot) return;
+    uiRoot.style.position = "fixed";
+    uiRoot.style.left = "0";
+    uiRoot.style.top = "0";
+    uiRoot.style.right = "0";
+    uiRoot.style.bottom = "0";
+    uiRoot.style.pointerEvents = "none";
+    uiRoot.style.zIndex = "5";
     uiRoot.innerHTML = "";
 
     const style = make("style");
     style.textContent = `
-    .kira-wrap{position:absolute;inset:0;color:#eaeef4;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;background:transparent;display:flex;flex-direction:column;overflow:hidden}
+    .kira-wrap{position:fixed;inset:0;color:#eaeef4;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;background:transparent;display:flex;flex-direction:column;overflow:hidden;pointer-events:auto}
     .kira-top{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid #1b1e28;background:rgba(0,0,0,.8);z-index:3}
     .kira-title{font-weight:700;color:#49dfff;letter-spacing:.4px}
     .kira-center{text-align:center;font-size:12px;opacity:.92}
